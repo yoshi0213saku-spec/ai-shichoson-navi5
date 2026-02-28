@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI市町村ナビ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: sans-serif; background-color: #f8fafc; margin: 0; }
+        #map-container { height: 250px; width: 100%; border-bottom: 1px solid #e2e8f0; }
+        .card { background: white; border-radius: 1rem; padding: 1.5rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #f1f5f9; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="importmap">
+    {
+      "imports": {
+        "@google/genai": "https://esm.run/@google/genai"
+      }
+    }
+    </script>
+
+    <script type="module">
+        // ブラウザの制限を回避するため、Module内で全てのロジックを完結させます
+        import { GoogleGenerativeAI } from "@google/genai";
+
+        const { useState, useEffect, useRef, createElement: h } = React;
+
+        const App = () => {
+            const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
+            const [isConfigured, setIsConfigured] = useState(!!localStorage.getItem('gemini_api_key'));
+            const [query, setQuery] = useState('');
+            const [data, setData] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const mapRef = useRef(null);
+            const leafletMap = useRef(null);
+            const markerRef = useRef(null);
+
+            // 地図の初期化
+            useEffect(() => {
+                if (isConfigured && !leafletMap.current) {
+                    const timer = setTimeout(() => {
+                        const container = document.getElementById('map-container');
+                        if (container) {
+                            leafletMap.current = L.map(container, { zoomControl: false }).setView([36.2, 138.2], 5);
+                            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(leafletMap.current);
+                        }
+                    }, 100);
+                    return () => clearTimeout(timer);
+                }
+            }, [isConfigured]);
+
+            const handleSearch = async (e) => {
+                e.preventDefault();
+                if (!query || loading) return;
+                setLoading(true);
+
+                try {
+                    const genAI = new GoogleGenerativeAI(apiKey);
+                    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+                    const prompt = `日本の市町村「${query}」の正確な統計情報をJSON形式のみで提供してください。解説文は中学生〜大人向けに格調高く、かつ市町村の魅力を伝えるトーンで。ハルシネーション（嘘）を厳禁とし、根拠不明な人物は「なし」としてください。形式: { "city", "prefecture", "overview", "population": {"total", "male", "female"}, "aging_rate", "annual_budget", "tourist_spots": [{"name", "description"}], "famous_people": [{"name", "bio"}], "lat", "lng" }`;
+                    
+                    const result = await model.generateContent(prompt);
+                    const response = await result.response;
+                    const text = response.text().replace(/```json|```/g, '').trim();
+                    const json = JSON.parse(text);
+                    
+                    setData(json);
+                    
+                    if (leafletMap.current) {
+                        leafletMap.current.flyTo([json.lat, json.lng], 12, { duration: 2 });
+                        if (markerRef.current) markerRef.current.remove();
+                        markerRef.current = L.marker([json.lat, json.lng]).addTo(leafletMap.current)
+                            .bindPopup(`<b>${json.city}</b>`).openPopup();
+                    }
+                } catch (err) {
+                    alert("データの取得に失敗しました。APIキーを確認するか、市町村名を正しく入力してください。");
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const saveKey = (e) => {
+                e.preventDefault();
+                if (apiKey.length < 20) return alert("有効なAPIキーを入力してください。");
+                localStorage.setItem('gemini_api_key', apiKey);
+                setIsConfigured(true);
+            };
+
+            // 設定画面 (APIキー入力)
+            if (!isConfigured) {
+                return h('div', { className: 'flex items-center justify-center min-h-screen p-6 bg-slate-100' }, 
+                    h('div', { className: 'bg-white p-8 rounded-3xl shadow-xl max-w-sm w-full border border-slate-200' }, [
+                        h('div', { className: 'text-center mb-6' }, [
+                            h('span', { className: 'text-4xl' }, '🗾'),
+                            h('h1', { className: 'text-2xl font-bold mt-2 text-emerald-800' }, 'AI市町村ナビ')
+                        ]),
+                        h('p', { className: 'text-sm text-slate-500 mb-6 text-center' }, '日本の市町村をもっと楽しく知ろう！\n開始するにはAPIキーを入力してください。'),
+                        h('form', { onSubmit: saveKey }, [
+                            h('input', { 
+                                type: 'password', 
+                                value: apiKey, 
+                                onChange: e => setApiKey(e.target.value),
+                                className: 'w-full p-4 bg-slate-50 rounded-xl mb-4 border outline-none focus:ring-2 focus:ring-emerald-500',
+                                placeholder: 'Gemini APIキーを貼り付け'
+                            }),
+                            h('button', { className: 'w-full bg-emerald-600 text-white p-4 rounded-xl font-bold shadow-lg hover:bg-emerald-700 transition-colors' }, '設定を保存して開始')
+                        ])
+                    ])
+                );
+            }
+
+            // メイン画面
+            return h('div', { className: 'min-h-screen flex flex-col' }, [
+                h('div', { id: 'map-container' }),
+                h('div', { className: 'p-4 bg-white sticky top-0 shadow-sm z-[1000] border-b' }, 
+                    h('form', { onSubmit: handleSearch, className: 'flex gap-2 max-w-2xl mx-auto' }, [
+                        h('input', { 
+                            value: query, 
+                            onChange: e => setQuery(e.target.value),
+                            className: 'flex-1 p-3 bg-slate-100 rounded-xl outline-none border focus:border-emerald-500',
+                            placeholder: '市町村名を入力（例：南相木村）'
+                        }),
+                        h('button', { className: 'bg-emerald-600 text-white px-6 rounded-xl font-bold' }, loading ? '検索中' : '検索')
+                    ])
+                ),
+                h('main', { className: 'p-4 max-w-2xl mx-auto w-full flex-1' }, 
+                    data ? [
+                        h('div', { className: 'card border-t-4 border-t-emerald-500' }, [
+                            h('p', { className: 'text-emerald-600 font-bold text-sm' }, data.prefecture),
+                            h('h2', { className: 'text-3xl font-black mb-3' }, data.city),
+                            h('p',
